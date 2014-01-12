@@ -33,7 +33,7 @@ class WikiLinksPlugin {
     const REGEX_WIKILINK = '/\[\[([^\]]+)\]\]/';
     const DELIMITER_LINK = '|';
     const DELIMITER_POST_TYPE = '*';    
-    const WIKILINK_CREATE_CLASS = 'wikilink_create';
+    const ADD_POST_CLASS = 'wikilink_create';
     const DEFAULT_POST_TYPE = 'page';
 
     public $name = "WikiPageLinksPlugin";
@@ -63,21 +63,32 @@ class WikiLinksPlugin {
     }
     
     /**
-     * Peparate out the viewed title from the link name from wikilinks of the form 
-     * [[link|some user title]]
-     * or
-     * [[link|Link Building Module\person]]
-     * [[Link Building Module\person]]
-     * [[Link Building Module\person]]
+     * Parse the wikilink. These links follow this pattern:
+     *
+     * link text|Post Title*post_type
+     *
+     * The 'link text' and post_type are optional. The order
+     * is significant. Extra whitespace before/after an item
+     * is trimmed. All of these are valid formats:
+     *
+     * link text | Some Post Title * post
+ *
+     * Some Post Title
+     *
+     * Some Post Title*post
+     * 
+     * link text | Some Post Title
      */
     function parse_wikilink($wikilink) {
-   		list($link, $title) = explode(self::DELIMITER_LINK, $wikilink, 2);
-        if (!$title) 
-            $title = $link;
-        list($title, $post_type) = explode(self::DELIMITER_POST_TYPE, $title, 2);
-        if (!$post_type) 
+   		list($link_text, $post_title) = explode(self::DELIMITER_LINK, $wikilink, 2);
+        if (!$post_title) {
+            $post_title = $link_text;
+        }
+        list($post_title, $post_type) = explode(self::DELIMITER_POST_TYPE, $post_title, 2);
+        if (!$post_type) {
             $post_type = '';
-    	return array($link, $title, $post_type);
+        }
+    	return array(trim($link_text), trim($post_title), trim($post_type));
     }
 
     /**
@@ -107,30 +118,30 @@ class WikiLinksPlugin {
 		}
 
 		foreach( $links as $full_link => $match ) {
-			list($link, $post_title, $post_type) = $this->parse_wikilink($full_link);
+			list($link_text, $post_title, $post_type) = $this->parse_wikilink($full_link);
 
-            if (!$post_type)
+            if (!$post_type) {
                 $post_type = self::DEFAULT_POST_TYPE;
+            }
 
-            $clean_title = html_entity_decode($link, ENT_QUOTES);
+            $clean_title = html_entity_decode($post_title, ENT_QUOTES);
 
 			if ( $post = $this->get_post_by_title( $clean_title, $post_type ) ) {
 				$content = str_replace($match, 
 					"<a href='". get_permalink($post->ID) ."'>$post_title</a>",
 					$content);
-			} else if ( is_user_logged_in() && current_user_can('edit_posts') ) {
+			} elseif ( is_user_logged_in() && current_user_can('edit_posts') ) {
 				// Add a link to create the page if it doesn't exist.
                 // Todo: If the post is a custom post type, our check for 'edit_posts'
                 // capability might be incorrect. 
 	
-				$encodedlink = urlencode($link);
-                $link_class = self::CLASS_ADD_POST;
+				$encodedlink = urlencode($post_title);
+                $link_class = self::ADD_POST_CLASS;
                 $create_post_url = get_admin_url() . "/post-new.php?post_type={$post_type}&post_title={$encodedlink}";
                 $anchor_tag = "<a href='{$create_post_url}' class='{$link_class}' title='Create this post'>?</a>";
 				$content = str_replace($match, "{$post_title}[{$anchor_tag}]", $content);
 
 			} else {
-				
 				$content = str_replace($match, $page_title, $content);
 			}
 		}
