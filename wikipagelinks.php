@@ -30,27 +30,24 @@ require_once ABSPATH . WPINC . "/post.php";
 if ( !class_exists("WikiLinksPlugin") ) {
 class WikiLinksPlugin {
 
-    var $name = "WikiPageLinksPlugin";
-    var $shortName = "WikiPageLinks";
-    var $longName = "Wiki Page Links Plugin";
-    var $adminOptionsName = "WikiPageLinksPluginAdminOptions";
-    
-    var $debug = false;
+    const REGEX_WIKILINK = '/\[\[([^\]]+)\]\]/';
+    const DELIMITER_LINK = '|';
+    const DELIMITER_POST_TYPE = '*';    
+    const WIKILINK_CREATE_CLASS = 'wikilink_create';
+    const DEFAULT_POST_TYPE = 'page';
 
-	var $defaultShortcuts = array(
-		'wiki' => 'http://en.wikipedia.org/wiki/%s',
-	);
+    public $name = "WikiPageLinksPlugin";
+    public $shortName = "WikiPageLinks";
+    public $longName = "Wiki Page Links Plugin";
+    public $adminOptionsName = "WikiPageLinksPluginAdminOptions";
+
+    var $debug = false;
     
     function log($message) {
         if ($this->debug)
             error_log($message . "\n", 3, "/tmp/wikilinks.log");
-    
     }
     
-    //PHP4 constructor
-	function WikiLinksPlugin() {$this->__construct();} 
-    
-    //PHP5 constructor
     function __construct() {
 	    // WordPress Hooks
         //add_action('admin_menu', array(&$this, 'addAdminPanel'));  
@@ -66,24 +63,39 @@ class WikiLinksPlugin {
     }
     
     /**
-     * Added by Daniel Llewellyn (Fremen):
-     * separate out the viewed title from the link name from wikilinks of the form [[link|some user title]]
+     * Peparate out the viewed title from the link name from wikilinks of the form 
+     * [[link|some user title]]
+     * or
+     * [[link|Link Building Module\person]]
+     * [[Link Building Module\person]]
+     * [[Link Building Module\person]]
      */
-    function wiki_get_piped_title($link) {
-   		list($link, $title) = split('\|', $link, 2);
-    	if (!$title) $title = $link;
-    	return array($link, $title);
+    function parse_wikilink($wikilink) {
+   		list($link, $title) = explode(self::DELIMITER_LINK, $wikilink, 2);
+        if (!$title) 
+            $title = $link;
+        list($title, $post_type) = explode(self::DELIMITER_POST_TYPE, $title, 2);
+        if (!$post_type) 
+            $post_type = '';
+    	return array($link, $title, $post_type);
+    }
+
+    /**
+     * Locate a post asociated with the requested title or return
+     * false if no post can be located.
+     */
+    function get_post_by_title($title, $post_type = 'page') {
+        $post = get_page_by_title($title, OBJECT, $post_type);
+        return $post;
     }
 
 	/* The filter.
 	 * Replaces double brackets with links to pages.
 	 */
 	function wiki_filter($content) {
-		$options = $this->getAdminOptions();
-
 		//Match only phrases in double brackets.  A backslash can be
 		//used to escape the sequence, if you want literal double brackets.
-		preg_match_all('/\[\[([^\]]+)\]\]/', $content, $matches);
+		preg_match_all(self::REGEX_WIKILINK, $content, $matches);
 
 		//$matches[1] is an array of all the phrases in double brackets.
 		//Dumping all the matches into a hash ensures we only look up
@@ -95,37 +107,27 @@ class WikiLinksPlugin {
 		}
 
 		foreach( $links as $full_link => $match ) {
-			// If the "page title" contains a ':', it *may* be a shortcut
-			// link rather than a page.  Deal with those first.
-			list($prefix, $sublink) = split(':', $full_link, 2);
+			list($link, $post_title, $post_type) = $this->parse_wikilink($full_link);
 
-			if ( $sublink ) {
-				if ( array_key_exists($prefix, $options['shortcuts']) ) {
-					list($link, $subtitle) = $this->wiki_get_piped_title($sublink);
-					$shortcutLink = sprintf( $options['shortcuts'][$prefix],
-						rawurlencode($link));
-					$content = str_replace($match, 
-						"<a href='$shortcutLink'>$subtitle</a>",
-						$content);
-					continue;
-				}
-			}
-			
-			list($link, $page_title) = $this->wiki_get_piped_title($full_link);
+            if (!$post_type)
+                $post_type = self::DEFAULT_POST_TYPE;
 
-			//We have a page link. 
-			//TODO: cut down on db hits and get the list of pages instead.
-			if ( $page = get_page_by_title(html_entity_decode($link, ENT_QUOTES)) ) {
+            $clean_title = html_entity_decode($link, ENT_QUOTES);
+
+			if ( $post = $this->get_post_by_title( $clean_title, $post_type ) ) {
 				$content = str_replace($match, 
-					"<a href='". get_permalink($page->ID) ."'>$page_title</a>",
+					"<a href='". get_permalink($post->ID) ."'>$post_title</a>",
 					$content);
-			} else if ( is_user_logged_in() ) {
-				//Add a link to create the page if it doesn't exist.
-				//TODO: limit showing the link to users who can create posts.
-
-				$home = get_option('siteurl');
+			} else if ( is_user_logged_in() && current_user_can('edit_posts') ) {
+				// Add a link to create the page if it doesn't exist.
+                // Todo: If the post is a custom post type, our check for 'edit_posts'
+                // capability might be incorrect. 
+	
 				$encodedlink = urlencode($link);
-				$content = str_replace($match, "{$page_title}[<a href='$home/wp-admin/post-new.php?post_type=page&post_title=$encodedlink' class='nonexistant_page' title='Create this page (requires a valid \"contributer\" account)'>?</a>]", $content);
+                $link_class = self::CLASS_ADD_POST;
+                $create_post_url = get_admin_url() . "/post-new.php?post_type={$post_type}&post_title={$encodedlink}";
+                $anchor_tag = "<a href='{$create_post_url}' class='{$link_class}' title='Create this post'>?</a>";
+				$content = str_replace($match, "{$post_title}[{$anchor_tag}]", $content);
 
 			} else {
 				
@@ -135,106 +137,6 @@ class WikiLinksPlugin {
 		
 		return $content;
 	}
-
-    function getAdminOptions() {
-        //defaults
-        $options = array(
-            'shortcuts' => $this->defaultShortcuts,
-        );
-    
-    	$savedOptions = get_option($this->adminOptionsName);
-    	
-		if (!empty($savedOptions)) {
-			foreach ($savedOptions as $key => $value) {
-			    $options[$key] = $value;
-			}
-		} 
-		
-		return $options;
-    
-    }
-    
-    function saveAdminOptions($options) {
-        if (get_option($this->adminOptionsName)) {
-            $this->log("Updating option: " . $this->adminOptionsName);
-            update_option($this->adminOptionsName, $options);
-        } else {
-            $this->log("Adding new option: " . $this->adminOptionsName);
-            add_option($this->adminOptionsName, $options);
-        }
-    }
-        
-    function adminPanel() {  
-        $adminOptions = $this->getAdminOptions();
-        $submitButton = "submit_Save${shortname}Options";
-
-        if (isset($_POST[$submitButton])) {
-            for ( $i=0; $i < $this->shortcutCount; $i++ ) {
-                if (isset($_POST["shortcut$i"])) {
-                    $adminOptions['feeds'][$i] = $_POST["feeds$i"];
-                }
-            }
-            
-            print_r($adminOptions);
-            $this->saveAdminOptions($adminOptions);
-            
-            ?>
-            
-        <div class="updated"><p><strong>
-        <?php  _e("Settings Updated", $this->name); ?>
-        </strong></p></div>
-        
-            <?php
-        }
-        
-        ?>  
-        <div class="wrap">  
-            <h2><?php echo $longName; ?></h2>  
-            <form method="post" action="<?php echo $_SERVER['REQUEST_URI']; ?>">
-            <?php wp_nonce_field('update-options'); ?>
-            
-            <table class="form-table">
-            <tr valign="top">
-            
-            <th scope="row"></th>
-            <td>
-
-            <input type="text" 
-                   name="feeds<?php echo $i; ?>" 
-                   value="<?php echo $feed; ?>"
-                   size="50" />
-            <br />
-            
-            </td>
-            </tr>
-
-            </table>
-            
-            <input type="hidden" name="action" value="update" />
-            <input type="hidden" name="page_options"
-             value="new_option_name,some_other_option,option_etc" />
-
-            <p class="submit">
-            <input type="submit" 
-			    name="<?php echo $submitButton; ?>" 
-                value="<?php _e('Save Changes'); ?>" />
-            </p>
-
-            
-            </form>
-        </div>  
-        <?php  
-    }    
-    
-    function addAdminPanel()   
-    {  
-        add_submenu_page('options-general.php', 
-        $this->longName, 
-        $this->shortName, 
-        10, __FILE__, 
-        array(&$this, 'adminPanel'));
-    }    
-
 }
 }
 
